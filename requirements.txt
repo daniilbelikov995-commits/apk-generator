@@ -1,3 +1,4 @@
-pyTelegramBotAPI
+pytelegrambotapi
 requests
-openai
+flask
+
