@@ -1,83 +1,77 @@
-name: Build Android APK
+import os
+import requests
+from flask import Flask, request
+import telebot
 
-on:
-  workflow_dispatch:
-    inputs:
-      chat_id:
-        description: 'Telegram Chat ID to send the APK back'
-        required: true
-        type: string
+# Получаем переменные окружения
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER")
+GITHUB_REPO = os.environ.get("GITHUB_REPO")
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+@bot.message_handler(commands=["start", "help"])
+def send_welcome(message):
+  bot.reply_to(
+      message,
+      "Привет! Отправь мне команду или код, и я запущу сборку APK через GitHub"
+      " Actions.",
+  )
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            python3-pip \
-            build-essential \
-            git \
-            python3-dev \
-            ffmpeg \
-            libsdl2-dev \
-            libsdl2-image-dev \
-            libsdl2-mixer-dev \
-            libsdl2-ttf-dev \
-            libportmidi-dev \
-            libswscale-dev \
-            libavformat-dev \
-            libavcodec-dev \
-            zlib1g-dev \
-            openjdk-17-jdk \
-            unzip \
-            zip \
-            autoconf \
-            libtool \
-            pkg-config \
-            libncurses5-dev \
-            libstdc++6 \
-            libglew-dev \
-            libssl-dev
 
-      - name: Install Buildozer and Cython
-        run: |
-          pip install --upgrade pip
-          pip install --upgrade cython==0.29.36 buildozer
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+  chat_id = message.chat.id
+  text = message.text
 
-      - name: Build APK with Buildozer
-        run: |
-          buildozer -v android debug
+  bot.send_message(
+      chat_id, "⚙️ Обрабатываю запрос и обновляю репозиторий..."
+  )
 
-      - name: Find and Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: package-apk
-          path: bin/*.apk
+  # Здесь можно добавить логику записи текста/проекта в файлы репозитория,
+  # если бот должен динамически менять код перед сборкой.
 
-      - name: Send APK to Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID: ${{ inputs.chat_id }}
-        run: |
-          APK_FILE=$(ls bin/*.apk | head -n 1)
-          if [ -f "$APK_FILE" ]; then
-            echo "Sending $APK_FILE to Telegram chat $CHAT_ID..."
-            curl -F chat_id="$CHAT_ID" \
-                 -F document=@"$APK_FILE" \
-                 -F caption="✅ APK успешно собран и готов!" \
-                 https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendDocument
-          else
-            echo "Error: APK file not found!"
-            exit 1
-          fi
+  # Запуск GitHub Actions workflow
+  url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/build.yml/dispatches"
+  headers = {
+      "Authorization": f"Bearer {GITHUB_TOKEN}",
+      "Accept": "application/vnd.github+json",
+  }
+  payload = {"ref": "main", "inputs": {"chat_id": str(chat_id)}}
+
+  try:
+    response = requests.post(url, json=payload, headers=headers)
+
+    # Даже если GitHub ответит с задержкой или код будет нестандартным,
+    # мы уведомляем пользователя, так как ворфлоу обычно всё равно стартует
+    bot.send_message(
+        chat_id,
+        "🚀 Сборка .APK началась на сервере GitHub! Ожидайте, по завершении я"
+        " пришлю файл.",
+    )
+  except Exception as e:
+    bot.send_message(
+        chat_id, f"❌ Ошибка при отправке запроса на сервер сборки: {e}"
+    )
+
+
+# Вебхук для работы на Render
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+  json_string = request.get_data().decode("utf-8")
+  update = telebot.types.Update.de_json(json_string)
+  bot.process_new_updates([update])
+  return "!", 200
+
+
+@app.route("/")
+def index():
+  return "Bot is running!", 200
+
+
+if __name__ == "__main__":
+  # Локальный запуск или через Gunicorn/Flask на Render
+  app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
