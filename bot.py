@@ -13,7 +13,8 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://api.groq.com/openai/v1")
+
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -29,7 +30,8 @@ def handle_message(message):
     # 1. Генерируем Python код приложения
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="llama-3.3-70b-versatile",
+
             messages=[
                 {"role": "system", "content": "You are a Kivy Python expert. Generate ONLY valid runnable Python code using Kivy framework for Android. Do not include markdown code blocks or explanations. Output pure Python code only."},
                 {"role": "user", "content": prompt}
