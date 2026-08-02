@@ -1,164 +1,166 @@
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from threading import Thread
 import time
-import base64
 import requests
+from threading import Thread
+from flask import Flask
 import telebot
-from openai import OpenAI
 
-# Запускаем мини-сервер для Render, чтобы пройти проверку порта
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running!")
+# Получаем токены из переменных окружения Render
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO_OWNER = os.getenv("GITHUB_OWNER")  # Ваш юзернейм или организация на GitHub
+REPO_NAME = os.getenv("GITHUB_REPO")  # Название репозитория
 
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    server.serve_forever()
+bot = telebot.TeleBot(TOKEN)
 
-Thread(target=run_server, daemon=True).start()
+# --- МИНИ-СЕРВЕР ДЛЯ ПРЕДОТВРАЩЕНИЯ ЗАСЫПАНИЯ НА RENDER ---
+app = Flask("")
 
-# Получаем настройки из переменных окружения
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO = os.environ.get("GITHUB_REPO")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-client = OpenAI(api_key=OPENAI_API_KEY)
+@app.route("/")
+def home():
+  return "Bot is active!"
 
-@bot.message_handler(commands=['start'])
-def send_welcome(bot_message):
-    bot.reply_to(bot_message, "Привет! Отправь мне код или описание приложения, и я соберу APK с отправкой готового файла сюда.")
 
-def check_and_send_apk(chat_id, headers):
-    # Ожидаем старта ворфлоу (даем GitHub пару секунд на создание рана)
-    time.sleep(10)
-    
-    runs_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs?per_page=1"
-    run_id = None
-    
-    # Пытаемся найти ID последнего активного рана
-    for _ in range(5):
-        res = requests.get(runs_url, headers=headers)
-        if res.status_code == 200:
-            runs = res.json().get("workflow_runs", [])
-            if runs:
-                run_id = runs[0]["id"]
-                break
-        time.sleep(5)
-        
-    if not run_id:
-        bot.send_message(chat_id, "⚠️ Не удалось отследить запуск сборки в GitHub Actions.")
-        return
+def run_web():
+  port = int(os.environ.get("PORT", 8080))
+  app.run(host="0.0.0.0", port=port)
 
-    bot.send_message(chat_id, "⏳ Сборка идет на сервере, ожидаю завершения...")
 
-    # Опрашиваем статус сборки (максимум ~10 минут)
-    status_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs/{run_id}"
-    conclusion = None
-    
-    for _ in range(60):
-        time.sleep(10)
-        res = requests.get(status_url, headers=headers)
-        if res.status_code == 200:
-            data = res.json()
-            status = data.get("status")
-            if status == "completed":
-                conclusion = data.get("conclusion")
-                break
+def keep_alive():
+  t = Thread(target=run_web)
+  t.start()
 
-    if conclusion != "success":
-        bot.send_message(chat_id, f"❌ Сборка завершилась с ошибкой или статусом: {conclusion}")
-        return
 
-    bot.send_message(chat_id, "📦 Сборка успешна! Скачиваю APK...")
+# -----------------------------------------------------------
 
-    # Ищем артефакт
-    artifacts_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/runs/{run_id}/artifacts"
-    res = requests.get(artifacts_url, headers=headers)
-    if res.status_code != 200:
-        bot.send_message(chat_id, "❌ Не удалось получить список артефактов.")
-        return
 
-    artifacts = res.json().get("artifacts", [])
-    if not artifacts:
-        bot.send_message(chat_id, "❌ Артефакты сборки не найдены.")
-        return
+@bot.message_handler(commands=["start"])
+def send_welcome(message):
+  bot.reply_to(
+      message,
+      "Привет! Отправь мне текст или код, и я соберу из него APK через GitHub"
+      " Actions.",
+  )
 
-    artifact_download_url = artifacts[0]["archive_download_url"]
-    
-    # Скачиваем архив с артефактом
-    art_res = requests.get(artifact_download_url, headers=headers)
-    if art_res.status_code != 200:
-        bot.send_message(chat_id, "❌ Ошибка при скачивании артефакта.")
-        return
-
-    zip_path = "app.zip"
-    with open(zip_path, "wb") as f:
-        f.write(art_res.content)
-
-    # Отправляем файл пользователю (если внутри zip один файл, или отправляем сам архив)
-    # Чаще всего Buildozer кладет в артефакт сам .apk или архив с ним
-    import zipfile
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall("extracted_apk")
-
-    sent = False
-    for root, dirs, files in os.walk("extracted_apk"):
-        for file in files:
-            if file.endswith(".apk"):
-                apk_path = os.path.join(root, file)
-                with open(apk_path, "rb") as apk_file:
-                    bot.send_document(chat_id, apk_file, caption="🎉 Ваш APK файл готов!")
-                sent = True
-                break
-        if sent:
-            break
-
-    if not sent:
-        # Если структура отличается, отправляем архив целиком
-        with open(zip_path, "rb") as zip_file:
-            bot.send_document(chat_id, zip_file, caption="🎉 Архив с результатами сборки готов!")
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    chat_id = message.chat.id
-    code = message.text
+  user_text = message.text
+  bot.reply_to(
+      message, "🔄 Принято! Обновляю код в репозитории и запускаю сборку APK..."
+  )
 
-    bot.send_message(chat_id, "⚙️ Обрабатываю запрос и обновляю репозиторий...")
+  try:
+    # 1. Шаг: Обновляем main.py в репозитории GitHub
+    file_path = "main.py"
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{file_path}"
 
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
     }
 
-    # Обновляем main.py в репозитории
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/main.py"
-    get_res = requests.get(url, headers=headers)
-    sha = get_res.json().get("sha") if get_res.status_code == 200 else None
+    # Получаем текущий SHA файла (требуется GitHub API для обновления)
+    r = requests.get(url, headers=headers)
+    sha = r.json().get("sha") if r.status_code == 200 else None
 
-    encoded_content = base64.b64encode(code.encode("utf-8")).decode("utf-8")
+    import base64
+
+    encoded_content = base64.b64encode(user_text.encode("utf-8")).decode(
+        "utf-8"
+    )
+
     data = {
-        "message": "Update generated app",
-        "content": encoded_content
+        "message": "Update main.py via Telegram bot",
+        "content": encoded_content,
+        "sha": sha,
     }
-    if sha:
-        data["sha"] = sha
 
-    requests.put(url, headers=headers, json=data)
+    r_put = requests.put(url, headers=headers, json=data)
+    if r_put.status_code not in [200, 201]:
+      bot.reply_to(
+          message,
+          f"❌ Ошибка при обновлении файла на GitHub: {r_put.text}",
+      )
+      return
 
-    # Запускаем сборку в GitHub Actions
-    dispatch_url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/build.yml/dispatches"
-    requests.post(dispatch_url, headers=headers, json={"ref": "main"})
+    # 2. Шаг: Запускаем GitHub Action (workflow_dispatch)
+    dispatch_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/workflows/build.yml/dispatches"
+    dispatch_data = {"ref": "main"}
+    r_disp = requests.post(dispatch_url, headers=headers, json=dispatch_data)
 
-    bot.send_message(chat_id, "🚀 Сборка .APK началась на сервере GitHub! Ожидайте, по завершении я пришлю файл.")
+    if r_disp.status_code != 204:
+      bot.reply_to(
+          message, f"❌ Не удалось запустить сборку: {r_disp.text}"
+      )
+      return
 
-    # Запускаем фоновый процесс отслеживания и отправки в Telegram
-    Thread(target=check_and_send_apk, args=(chat_id, headers), daemon=True).start()
+    bot.reply_to(
+        message,
+        "⚙️ Сборка APK запущена на сервере GitHub. Это займет несколько минут...",
+    )
 
-if __name__ == '__main__':
-    bot.infinity_polling()
+    # 3. Шаг: Ожидание и поиск артефакта (APK)
+    time.sleep(30)  # Даем время ворфлоу на запуск
+    run_id = None
+
+    for _ in range(20):  # Ждем максимум ~10 минут
+      runs_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/runs"
+      r_runs = requests.get(runs_url, headers=headers)
+      if r_runs.status_code == 200:
+        runs = r_runs.json().get("workflow_runs", [])
+        if runs:
+          latest_run = runs[0]
+          if latest_run["status"] == "completed":
+            run_id = latest_run["id"]
+            break
+      time.sleep(30)
+
+    if not run_id:
+      bot.reply_to(
+          message,
+          "⏱ Время ожидания истекло или сборка еще идет. Проверьте GitHub.",
+      )
+      return
+
+    # 4. Шаг: Скачивание и отправка APK пользователю
+    artifacts_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/runs/{run_id}/artifacts"
+    r_art = requests.get(artifacts_url, headers=headers)
+
+    if r_art.status_code == 200:
+      artifacts = r_art.json().get("artifacts", [])
+      if artifacts:
+        artifact_download_url = artifacts[0]["archive_download_url"]
+        # Скачиваем архив с артефактом
+        r_zip = requests.get(
+            artifact_download_url,
+            headers=headers,
+            allow_redirects=True,
+        )
+
+        zip_path = "apk_package.zip"
+        with open(zip_path, "wb") as f:
+          f.write(r_zip.content)
+
+        # Отправляем файл пользователю в Telegram
+        with open(zip_path, "rb") as f:
+          bot.send_document(
+              message.chat.id, f, caption="✅ Готово! Вот ваш собранный APK."
+          )
+        return
+
+    bot.reply_to(
+        message, "❌ Сборка завершена, но артефакт (APK) не найден."
+    )
+
+  except Exception as e:
+    bot.reply_to(message, f"⚠️ Произошла ошибка: {str(e)}")
+
+
+if __name__ == "__main__":
+  # Запускаем веб-сервер для UptimeRobot перед стартом бота
+  keep_alive()
+  # Запуск самого бота
+  bot.infinity_polling()
+
