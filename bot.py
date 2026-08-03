@@ -3,30 +3,25 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- УКАЖИТЕ СВОИ ДАННЫЕ ЗДЕСЬ ---
-GITHUB_OWNER = "ВАШ_НИК_НА_GITHUB"  # Ваш точный логин
-GITHUB_REPO = "apk-generator"  # Имя репозитория
-WORKFLOW_FILE = "build.yml"  # Имя файла из Шага 1
-DEFAULT_BRANCH = "main"  # Или master (проверьте в репозитории)
-# ----------------------------------
+# --- Ваши данные ---
+GITHUB_OWNER = "daniilbelikov995-commits"
+GITHUB_REPO = "apk-generator1"
+WORKFLOW_FILE = "build.yml"
+DEFAULT_BRANCH = "main"
+# ------------------
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   await update.message.reply_text(
-      "🤖 Бот готов с нуля! Отправь /build для запуска сборки."
+      "🤖 Бот для сборки APK готов! Отправьте команду /build, чтобы запустить"
+      " процесс."
   )
 
 
 async def build_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  github_token = os.getenv("GITHUB_TOKEN")
+  github_token = "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"
 
-  if not github_token:
-    await update.message.reply_text(
-        "❌ Ошибка: на сервере не задан GITHUB_TOKEN."
-    )
-    return
-
-  await update.message.reply_text("🔄 Отправляю запрос на сборку...")
+  await update.message.reply_text("🔄 Отправляю запрос на сборку APK в GitHub...")
 
   url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_FILE}/dispatches"
 
@@ -43,28 +38,26 @@ async def build_apk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if response.status_code == 204:
       await update.message.reply_text(
-          "✅ Сборка успешно запущена! Прогресс виден во вкладке Actions."
+          "✅ Сборка успешно запущена на GitHub!\nСледить за прогрессом"
+          " можно во вкладке Actions вашего репозитория."
       )
     else:
       await update.message.reply_text(
-          f"❌ Ошибка от GitHub ({response.status_code}):\n{response.text}"
+          f"❌ Ошибка от GitHub (код {response.status_code}):\n{response.text}"
       )
   except Exception as e:
-    await update.message.reply_text(f"❌ Ошибка соединения: {e}")
+    await update.message.reply_text(f"❌ Ошибка соединения с GitHub: {e}")
 
 
 def main():
-  telegram_token = os.getenv("TELEGRAM_TOKEN")
-  if not telegram_token:
-    print("❌ Не найден TELEGRAM_TOKEN!")
-    return
+  telegram_token = "8906501599:AAEUHqETfOFMlrIU8OgZ1SbsbM1BUO6mpPc"
 
   app = ApplicationBuilder().token(telegram_token).build()
 
   app.add_handler(CommandHandler("start", start))
   app.add_handler(CommandHandler("build", build_apk))
 
-  print("Бот запущен и ждет команды...")
+  print("Бот успешно запущен на ПК и ждет команду /build...")
   app.run_polling()
 
 
